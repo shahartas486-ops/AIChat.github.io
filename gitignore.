@@ -1,0 +1,20 @@
+# Environment variables
+.env
+*.env
+config.py
+config.local.py
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Uploads
+uploads/
+data/
+*.db
+
+# IDE settings
+.vscode/
+.idea/
