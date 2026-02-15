@@ -48,28 +48,28 @@ class Database:
         conn.commit()
         conn.close()
     
-    def get_or_create_user(self, session_id, ip_address=None):
+    # ✅ این تابع باید دقیقاً این شکلی باشه
+    def get_or_create_user(self, session_id, client_ip=None):
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('SELECT id FROM users WHERE session_id = ?', (session_id,))
+        cursor.execute('SELECT id, ip_address FROM users WHERE session_id = ?', (session_id,))
         user = cursor.fetchone()
         
         if not user:
             cursor.execute(
                 '''INSERT INTO users (session_id, username, ip_address) 
                    VALUES (?, ?, ?)''',
-                (session_id, f'کاربر-{session_id[:8]}', ip_address)
+                (session_id, f'کاربر-{session_id[:8]}', client_ip)
             )
             user_id = cursor.lastrowid
         else:
             user_id = user[0]
-            # Update last active and IP if provided
-            if ip_address:
+            if client_ip and (len(user) < 2 or user[1] != client_ip):
                 cursor.execute(
                     '''UPDATE users SET last_active = ?, ip_address = ? 
                        WHERE id = ?''',
-                    (datetime.now().isoformat(), ip_address, user_id)
+                    (datetime.now().isoformat(), client_ip, user_id)
                 )
             else:
                 cursor.execute(
@@ -136,7 +136,6 @@ class Database:
         return result
     
     def get_user_messages(self, user_id, limit=50):
-        """Get messages for a specific user only"""
         return self.get_messages(user_id=user_id, limit=limit)
     
     def get_all_users(self):
@@ -170,7 +169,6 @@ class Database:
         return result
     
     def get_user_by_ip(self, ip_address):
-        """Find user by IP address"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
