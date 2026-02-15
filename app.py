@@ -61,7 +61,7 @@ def index():
 @app.route('/admin')
 def admin_panel():
     password = request.args.get('password', '')
-    if password != 'admin123':
+    if password != 'password_admin':
         return 'دسترسی غیرمجاز', 403
     return render_template('admin.html')
 
