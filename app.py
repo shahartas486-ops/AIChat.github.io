@@ -16,11 +16,10 @@ Config.init_app(app)
 # Initialize components
 db = Database(app.config['DATABASE'])
 
-# **این بخش رو اصلاح کن:**
 ai_service = AIService(
-    api_key=app.config['OPENAI_API_KEY'],  # این رو تغییر دادم
-    api_url=app.config['OPENAI_API_URL'],  # این رو تغییر دادم
-    model=app.config['OPENAI_MODEL']       # این رو تغییر دادم
+    api_key=app.config['OPENAI_API_KEY'],
+    api_url=app.config['OPENAI_API_URL'],
+    model=app.config['OPENAI_MODEL']
 )
 
 # Helper functions
@@ -28,7 +27,6 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
 
-# ... بقیه کدها بدون تغییر
 def process_latex(text):
     import re
     if not text:
@@ -47,21 +45,34 @@ def process_latex(text):
     
     return text
 
+def get_client_ip():
+    """دریافت IP واقعی کاربر با در نظر گرفتن پراکسی"""
+    if request.headers.get('X-Forwarded-For'):
+        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    elif request.headers.get('X-Real-IP'):
+        return request.headers.get('X-Real-IP')
+    else:
+        return request.remote_addr
+
 # Routes
 @app.route('/')
 def index():
-    session_id = session.get('session_id')
-    if not session_id:
-        session_id = str(uuid.uuid4())
-        session['session_id'] = session_id
+    # استفاده از ترکیبی از session و IP برای امنیت بیشتر
+    if 'user_id' not in session:
+        client_ip = get_client_ip()
+        user_agent = request.headers.get('User-Agent', '')
+        # ایجاد یک شناسه منحصر به فرد از ترکیب IP و User-Agent
+        unique_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{client_ip}:{user_agent}"))
+        session['user_id'] = unique_id
     
-    user_id = db.get_or_create_user(session_id)
-    return render_template('index.html', session_id=session_id)
+    # ذخیره در دیتابیس با IP
+    user_id = db.get_or_create_user(session['user_id'], client_ip=get_client_ip())
+    return render_template('index.html', user_id=user_id)
 
 @app.route('/admin')
 def admin_panel():
     password = request.args.get('password', '')
-    if password != 'password_admin':
+    if password != os.environ.get('ADMIN_PASSWORD', 'admin123'):
         return 'دسترسی غیرمجاز', 403
     return render_template('admin.html')
 
@@ -70,11 +81,10 @@ def admin_panel():
 def send_message():
     try:
         data = request.form
-        session_id = session.get('session_id')
-        if not session_id:
-            return jsonify({'status': 'error', 'message': 'Session not found'})
+        if 'user_id' not in session:
+            return jsonify({'status': 'error', 'message': 'Session not found'}), 401
         
-        user_id = db.get_or_create_user(session_id)
+        user_id = db.get_or_create_user(session['user_id'])
         message_type = data.get('message_type', 'text')
         content = data.get('content', '')
         chat_type = data.get('chat_type', 'ai')
@@ -107,23 +117,42 @@ def send_message():
         return jsonify({'status': 'success', 'user_id': user_id})
     
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/get_messages')
 def api_get_messages():
     chat_type = request.args.get('chat_type', 'ai')
-    session_id = session.get('session_id')
     
-    if chat_type == 'ai' and session_id:
-        user_id = db.get_or_create_user(session_id)
+    # **بخش اصلاح شده - مهمترین تغییرات اینجاست**
+    if chat_type == 'ai':
+        # کاربر عادی - فقط پیام‌های خودش
+        if 'user_id' not in session:
+            return jsonify({'messages': []})
+        
+        user_id = db.get_or_create_user(session['user_id'])
         messages = db.get_messages(user_id, 50)
-    else:
-        user_id = request.args.get('user_id')
-        if user_id and user_id.isdigit():
-            messages = db.get_messages(int(user_id), 50)
+        
+    elif chat_type == 'admin':
+        # ادمین - همه پیام‌ها رو می‌بینه
+        password = request.args.get('password', '')
+        if password != os.environ.get('ADMIN_PASSWORD', 'admin123'):
+            return jsonify({'status': 'error', 'message': 'دسترسی غیرمجاز'}), 403
+        
+        # برای ادمین، می‌تونیم همه پیام‌ها رو برگردونیم
+        specific_user = request.args.get('user_id')
+        if specific_user and specific_user.isdigit():
+            messages = db.get_messages(int(specific_user), 50)
         else:
             messages = db.get_messages(limit=50)
     
+    else:
+        # حالت پیش‌فرض - فقط پیام‌های خود کاربر
+        if 'user_id' not in session:
+            return jsonify({'messages': []})
+        user_id = db.get_or_create_user(session['user_id'])
+        messages = db.get_messages(user_id, 50)
+    
+    # پردازش LaTeX
     for msg in messages:
         if msg['message_type'] == 'text' and msg['content']:
             msg['content'] = process_latex(msg['content'])
@@ -132,12 +161,22 @@ def api_get_messages():
 
 @app.route('/api/get_users')
 def get_users_api():
+    # فقط ادمین می‌تونه لیست کاربران رو ببینه
+    password = request.args.get('password', '')
+    if password != os.environ.get('ADMIN_PASSWORD', 'admin123'):
+        return jsonify({'status': 'error', 'message': 'دسترسی غیرمجاز'}), 403
+    
     users = db.get_all_users()
     return jsonify({'users': users})
 
 @app.route('/api/admin/send', methods=['POST'])
 def admin_send():
     try:
+        # تأیید ادمین
+        password = request.form.get('password', '')
+        if password != os.environ.get('ADMIN_PASSWORD', 'admin123'):
+            return jsonify({'status': 'error', 'message': 'دسترسی غیرمجاز'}), 403
+        
         data = request.form
         user_id = data.get('user_id')
         message_type = data.get('message_type', 'text')
@@ -163,12 +202,14 @@ def admin_send():
         return jsonify({'status': 'success'})
     
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
+    # فقط صاحب فایل یا ادمین می‌تونه ببینه
+    # این قسمت رو هم می‌تونی امن‌تر کنی
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 if __name__ == '__main__':
-    app.secret_key = 'super-secret-key-change-in-production'
+    app.secret_key = os.environ.get('SECRET_KEY', 'fallback-secret-key')
     app.run(debug=True, port=5000, host='0.0.0.0')
